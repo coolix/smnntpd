@@ -1,12 +1,12 @@
-#include <netinet/in.h> // sockaddr, sockaddr_in
-#include <arpa/inet.h> // hton, ntoh
-#include <string.h> // memset
-#include <sys/socket.h> //socket
-#include <sys/types.h> //compatibilité BSD
-#include <stdio.h> //perror, fopen
-#include <stdlib.h> //exit
-#include <unistd.h> // close
-#include <fcntl.h> // fcntl
+#include <netinet/in.h>   // sockaddr, sockaddr_in
+#include <arpa/inet.h>    // hton, ntoh
+#include <string.h>       // memset
+#include <sys/socket.h>   //socket
+#include <sys/types.h>    //compatibilité BSD
+#include <stdio.h>        //perror, fopen, fileno
+#include <stdlib.h>       //exit
+#include <unistd.h>       // close
+#include <fcntl.h>        // fcntl
 
 #define PROXY_ADDRESS INADDR_ANY
 #define PROXY_PORT    119
@@ -22,8 +22,9 @@ die(const char *msg)
     exit(1);
 }
 
+/* Transfer data between a server and a client */
 int
-proxy_transfert(char who, FILE *src, FILE *dst)
+proxy_transfert(const char who, FILE *src, FILE *dst)
 {
     char buffer[512];
     char *res;
@@ -46,6 +47,32 @@ inline int
 max_fd(int a, int b)
 {
     return (a > b ? a : b);
+}
+
+FILE *
+server_connect()
+{
+    struct sockaddr_in server;
+    int serverfd;
+    FILE *server_stream;
+
+    server.sin_family = AF_INET;
+    server.sin_port = htons(SERVER_PORT);
+    server.sin_addr.s_addr = inet_addr(SERVER_ADDRESS);
+    memset(server.sin_zero,'\0', sizeof server.sin_zero);
+
+    serverfd = socket(PF_INET, SOCK_STREAM, 0);
+    if (serverfd == -1)
+        die("socket");
+
+    if (connect(serverfd, (struct sockaddr *)&server, sizeof server) == -1)
+        die("connect");
+    
+    fcntl(serverfd, F_SETFL, O_NONBLOCK);
+    if ((server_stream = fdopen(serverfd, "r+")) == NULL)
+        die("fdopen");
+    
+    return server_stream;
 }
 
 int 
@@ -73,13 +100,13 @@ main(void)
     if (listen(proxyfd, MAX_CLIENT_PENDING) == -1)
         die("listen");
 
-    struct sockaddr remote;
-    socklen_t remote_len = sizeof remote;
-    int remotefd;
+    struct sockaddr client;
+    socklen_t client_len = sizeof client;
+    int clientfd;
 
     for(;;)
     {
-        if ((remotefd = accept(proxyfd, &remote, &remote_len)) == -1)
+        if ((clientfd = accept(proxyfd, &client, &client_len)) == -1)
             die("accept");
 
         // Here comes a new challenger, let's fork() about sex
@@ -87,55 +114,40 @@ main(void)
         {
             close(proxyfd);
 
-            struct sockaddr_in server;
-            server.sin_family = AF_INET;
-            server.sin_port = htons(SERVER_PORT);
-            server.sin_addr.s_addr = inet_addr(SERVER_ADDRESS);
-            memset(server.sin_zero,'\0', sizeof server.sin_zero);
+            FILE *server_stream = server_connect();
+            int serverfd = fileno(server_stream);
 
-            int serverfd = socket(PF_INET, SOCK_STREAM, 0);
-            if (serverfd == -1)
-                die("socket");
-    
-            if (connect(serverfd, (struct sockaddr *)&server, sizeof server) == -1)
-                die("connect");
-            
-            FILE *server_stream; 
-            fcntl(serverfd, F_SETFL, O_NONBLOCK);
-            if ((server_stream = fdopen(serverfd, "r+")) == NULL)
-                die("fdopen");
-
-            FILE *remote_stream;
-            if (fcntl(remotefd, F_SETFL, O_NONBLOCK) < 0)
+            FILE *client_stream;
+            if (fcntl(clientfd, F_SETFL, O_NONBLOCK) < 0)
                 die("fcntl");
-            if ((remote_stream = fdopen(remotefd, "r+")) == NULL)
+            if ((client_stream = fdopen(clientfd, "r+")) == NULL)
                 die("fdopen");
 
             fd_set readfds, readfds_m;
             FD_ZERO(&readfds);
-            FD_SET(remotefd, &readfds);
+            FD_SET(clientfd, &readfds);
             FD_SET(serverfd, &readfds);
 
             for (;;)
             {
                 readfds_m = readfds;
-                select(max_fd(serverfd, remotefd)+1, &readfds_m, NULL, NULL, NULL);
+                select(max_fd(serverfd, clientfd)+1, &readfds_m, NULL, NULL, NULL);
                 if (FD_ISSET(serverfd, &readfds_m))
-                    if (proxy_transfert('S', server_stream, remote_stream))
+                    if (proxy_transfert('S', server_stream, client_stream))
                         break;
-                if (FD_ISSET(remotefd, &readfds_m))
+                if (FD_ISSET(clientfd, &readfds_m))
                 {
-                    if (proxy_transfert('C', remote_stream, server_stream))
+                    if (proxy_transfert('C', client_stream, server_stream))
                         break;
                 }
             }
             fclose(server_stream);
-            fclose(remote_stream);
+            fclose(client_stream);
             exit(0);
         }
         else
         {
-            close(remotefd);
+            close(clientfd);
         }
     }
     exit(EXIT_SUCCESS);
