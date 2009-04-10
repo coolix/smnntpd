@@ -7,6 +7,7 @@
 #include <stdlib.h>       //exit
 #include <unistd.h>       // close
 #include <fcntl.h>        // fcntl
+#include <sys/wait.h>     // waitpid
 
 #define PROXY_ADDRESS INADDR_ANY
 #define PROXY_PORT    119
@@ -20,6 +21,13 @@ die(const char *msg)
 {
     perror(msg);
     exit(1);
+}
+
+/* Reap zombies */
+void
+sigchld_handler(int s)
+{
+    while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
 /* Transfer data between a server and a client */
@@ -79,12 +87,12 @@ int
 main(void)
 {
     struct sockaddr_in proxy;
+    struct sigaction   sa; 
 
     proxy.sin_family = AF_INET;
     proxy.sin_port = htons(PROXY_PORT);
     proxy.sin_addr.s_addr = PROXY_ADDRESS;
     memset(proxy.sin_zero,'\0', sizeof proxy.sin_zero);
-
     
     int proxyfd = socket(PF_INET, SOCK_STREAM, 0);   
     if (proxyfd == -1)
@@ -103,6 +111,12 @@ main(void)
     struct sockaddr client;
     socklen_t client_len = sizeof client;
     int clientfd;
+
+    sa.sa_handler = sigchld_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags=SA_RESTART;
+    if (sigaction(SIGCHLD, &sa, NULL) == -1)
+        die("sigaction");
 
     for(;;)
     {
