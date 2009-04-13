@@ -1,20 +1,23 @@
 #include <netinet/in.h>   // sockaddr, sockaddr_in
 #include <arpa/inet.h>    // hton, ntoh
 #include <string.h>       // memset
-#include <sys/socket.h>   //socket
-#include <sys/types.h>    //compatibilité BSD
-#include <stdio.h>        //perror, fopen, fileno
-#include <stdlib.h>       //exit
+#include <sys/socket.h>   // socket
+#include <sys/types.h>    // compatibilité BSD
+#include <stdio.h>        // perror, fopen, fileno
+#include <stdlib.h>       // exit
 #include <unistd.h>       // close
 #include <fcntl.h>        // fcntl
 #include <sys/wait.h>     // waitpid
+#include <netdb.h>        // getaddrinfo
 
 #define PROXY_ADDRESS INADDR_ANY
 #define PROXY_PORT    119
 #define MAX_CLIENT_PENDING 5
 
-#define SERVER_ADDRESS "212.27.60.40"
-#define SERVER_PORT 119
+#define SERVER_ADDRESS "news.free.fr"
+#define SERVER_PORT    "119"
+
+#define NNTP_BUF 512
 
 void
 die(const char *msg)
@@ -34,7 +37,7 @@ sigchld_handler(int s)
 int
 proxy_transfert(const char who, FILE *src, FILE *dst)
 {
-    char buffer[512];
+    char buffer[NNTP_BUF];
     char *res;
     
     if ((res=fgets(buffer, sizeof buffer, 
@@ -60,26 +63,36 @@ max_fd(int a, int b)
 FILE *
 server_connect()
 {
-    struct sockaddr_in server;
+    struct addrinfo hints, *res;
+    int status;
+
+    struct sockaddr *server;
     int serverfd;
     FILE *server_stream;
 
-    server.sin_family = AF_INET;
-    server.sin_port = htons(SERVER_PORT);
-    server.sin_addr.s_addr = inet_addr(SERVER_ADDRESS);
-    memset(server.sin_zero,'\0', sizeof server.sin_zero);
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if ((status = getaddrinfo(SERVER_ADDRESS,
+        SERVER_PORT, &hints, &res)) != 0)
+    {   
+        gai_strerror(status);
+        exit(1);
+    }
+    server = res->ai_addr;
 
     serverfd = socket(PF_INET, SOCK_STREAM, 0);
     if (serverfd == -1)
         die("socket");
 
-    if (connect(serverfd, (struct sockaddr *)&server, sizeof server) == -1)
+    if (connect(serverfd, server, sizeof *server) == -1)
         die("connect");
     
     fcntl(serverfd, F_SETFL, O_NONBLOCK);
     if ((server_stream = fdopen(serverfd, "r+")) == NULL)
         die("fdopen");
     
+    freeaddrinfo(res);
     return server_stream;
 }
 
