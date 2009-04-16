@@ -17,7 +17,11 @@
 #define SERVER_ADDRESS "news.free.fr"
 #define SERVER_PORT    "119"
 
+#define NNTP_USER "user\r\n"
+#define NNTP_PASS "pass\r\n"
 #define NNTP_BUF 512
+
+#define AUTH_WITHOUT_CLIENT_KNOWING 1
 
 void
 die(const char *msg)
@@ -88,12 +92,27 @@ server_connect()
     if (connect(serverfd, server, sizeof *server) == -1)
         die("connect");
     
-    fcntl(serverfd, F_SETFL, O_NONBLOCK);
     if ((server_stream = fdopen(serverfd, "r+")) == NULL)
         die("fdopen");
     
     freeaddrinfo(res);
     return server_stream;
+}
+
+int
+set_credential(FILE *server)
+{
+    char msg[NNTP_BUF];
+
+    fputs("AUTHINFO USER " NNTP_USER, server);
+    fgets(msg, NNTP_BUF, server);
+    printf("%s\n", msg);
+    strncmp("381", msg, 3);
+
+    fputs("AUTHINFO PASS " NNTP_PASS, server);
+    fgets(msg, NNTP_BUF, server);
+    printf("%s\n", msg);
+    return strncmp("281", msg, 3);
 }
 
 int 
@@ -139,16 +158,33 @@ main(void)
         // Here comes a new challenger, let's fork() about sex
         if (!fork())
         {
+            FILE *server_stream, *client_stream;
+            int  serverfd;
+            char srv_msg[NNTP_BUF];
+
             close(proxyfd);
+            server_stream = server_connect();
+            serverfd     = fileno(server_stream);
 
-            FILE *server_stream = server_connect();
-            int serverfd = fileno(server_stream);
-
-            FILE *client_stream;
-            if (fcntl(clientfd, F_SETFL, O_NONBLOCK) < 0)
-                die("fcntl");
             if ((client_stream = fdopen(clientfd, "r+")) == NULL)
                 die("fdopen");
+            
+            if (AUTH_WITHOUT_CLIENT_KNOWING)
+            {
+                fgets(srv_msg, NNTP_BUF, server_stream);
+                if (set_credential(server_stream))
+                {
+                    fprintf(stderr, "couldn't set creds\n");
+                    exit(EXIT_FAILURE);
+                }
+                fputs(srv_msg, client_stream);
+                fflush(client_stream);
+            }
+
+            if (fcntl(clientfd, F_SETFL, O_NONBLOCK) < 0)
+                die("fcntl client");
+            if (fcntl(serverfd, F_SETFL, O_NONBLOCK) < 0)
+                die("fcntl server");
 
             fd_set readfds, readfds_m;
             FD_ZERO(&readfds);
