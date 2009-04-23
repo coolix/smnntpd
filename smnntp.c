@@ -9,6 +9,7 @@
 #include <fcntl.h>        // fcntl
 #include <sys/wait.h>     // waitpid
 #include <netdb.h>        // getaddrinfo
+#include <errno.h>
 
 #define PROXY_ADDRESS INADDR_ANY
 #define PROXY_PORT    119
@@ -44,17 +45,13 @@ proxy_transfert(const char who, FILE *src, FILE *dst)
     char buffer[NNTP_BUF];
     char *res;
     
-    if ((res=fgets(buffer, sizeof buffer, 
-        src)) == NULL)
+    res = fgets(buffer, sizeof buffer, src);
+    if (res == NULL)
         return -1;
-    do
-    {
-        printf("[%c]: %s", who, buffer);
+    
+    do {
         fputs(buffer, dst);
-        fflush(dst);
-    }
-    while ((res=fgets(buffer, sizeof buffer,
-        src)) != NULL);
+    } while (fgets(buffer, sizeof buffer, src) != NULL);
     return 0;
 }
 
@@ -106,12 +103,10 @@ set_credential(FILE *server)
 
     fputs("AUTHINFO USER " NNTP_USER, server);
     fgets(msg, NNTP_BUF, server);
-    printf("%s\n", msg);
     strncmp("381", msg, 3);
 
     fputs("AUTHINFO PASS " NNTP_PASS, server);
     fgets(msg, NNTP_BUF, server);
-    printf("%s\n", msg);
     return strncmp("281", msg, 3);
 }
 
@@ -161,14 +156,18 @@ main(void)
             FILE *server_stream, *client_stream;
             int  serverfd;
             char srv_msg[NNTP_BUF];
+            struct timeval timeout = {0, 1000};
 
             close(proxyfd);
             server_stream = server_connect();
-            serverfd     = fileno(server_stream);
+            serverfd      = fileno(server_stream);
 
             if ((client_stream = fdopen(clientfd, "r+")) == NULL)
                 die("fdopen");
             
+            setlinebuf(server_stream);
+            setlinebuf(client_stream);
+
             if (AUTH_WITHOUT_CLIENT_KNOWING)
             {
                 fgets(srv_msg, NNTP_BUF, server_stream);
@@ -178,13 +177,12 @@ main(void)
                     exit(EXIT_FAILURE);
                 }
                 fputs(srv_msg, client_stream);
-                fflush(client_stream);
             }
 
-            if (fcntl(clientfd, F_SETFL, O_NONBLOCK) < 0)
-                die("fcntl client");
-            if (fcntl(serverfd, F_SETFL, O_NONBLOCK) < 0)
-                die("fcntl server");
+            setsockopt(clientfd, SOL_SOCKET, SO_RCVTIMEO,
+                       &timeout, sizeof timeout);
+            setsockopt(serverfd, SOL_SOCKET, SO_RCVTIMEO,
+                       &timeout, sizeof timeout);
 
             fd_set readfds, readfds_m;
             FD_ZERO(&readfds);
