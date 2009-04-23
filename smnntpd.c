@@ -10,19 +10,10 @@
 #include <sys/wait.h>     // waitpid
 #include <netdb.h>        // getaddrinfo
 #include <errno.h>
+#include <confuse.h>
 
-#define PROXY_ADDRESS INADDR_ANY
-#define PROXY_PORT    119
 #define MAX_CLIENT_PENDING 5
-
-#define SERVER_ADDRESS "news.free.fr"
-#define SERVER_PORT    "119"
-
-#define NNTP_USER "user\r\n"
-#define NNTP_PASS "pass\r\n"
 #define NNTP_BUF 512
-
-#define AUTH_WITHOUT_CLIENT_KNOWING 1
 
 void
 die(const char *msg)
@@ -62,7 +53,7 @@ max_fd(int a, int b)
 }
 
 FILE *
-server_connect()
+server_connect(const char *addr, const char *port)
 {
     struct addrinfo hints, *res;
     int status;
@@ -74,8 +65,9 @@ server_connect()
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    if ((status = getaddrinfo(SERVER_ADDRESS,
-        SERVER_PORT, &hints, &res)) != 0)
+    if ((status = getaddrinfo(
+                   addr, port, &hints, &res )
+        ) != 0)
     {   
         gai_strerror(status);
         exit(1);
@@ -97,15 +89,27 @@ server_connect()
 }
 
 int
-set_credential(FILE *server)
+set_credential(FILE *server, const char *user, const char *pass)
 {
     char msg[NNTP_BUF];
+    char *id;
 
-    fputs("AUTHINFO USER " NNTP_USER, server);
+    id = (char *)calloc(strlen("AUTHINFO USER \r\n")
+                        + strlen(user)
+                        + 1, sizeof(char));
+    sprintf(id, "AUTHINFO USER %s\r\n", user);
+    fputs(id, server);
+    free(id);
+
     fgets(msg, NNTP_BUF, server);
-    strncmp("381", msg, 3);
 
-    fputs("AUTHINFO PASS " NNTP_PASS, server);
+    id = (char *)calloc(strlen("AUTHINFO PASS \r\n")
+                        + strlen(pass)
+                        + 1, sizeof(char));
+    sprintf(id, "AUTHINFO PASS %s\r\n", pass);
+    fputs(id,server);
+    free(id);
+
     fgets(msg, NNTP_BUF, server);
     return strncmp("281", msg, 3);
 }
@@ -116,9 +120,28 @@ main(void)
     struct sockaddr_in proxy;
     struct sigaction   sa; 
 
+    cfg_opt_t opts[] = { 
+        CFG_STR("proxy_addr", "INADDR_ANY", CFGF_NONE),
+        CFG_INT("proxy_port", 119, CFGF_NONE),
+        CFG_STR("server_addr", NULL, CFGF_NONE),
+        CFG_STR("server_port", NULL, CFGF_NONE),
+        CFG_STR("username", NULL, CFGF_NONE),
+        CFG_STR("password", NULL, CFGF_NONE),
+        CFG_BOOL("auth", cfg_false, CFGF_NONE)
+    };
+    cfg_t *cfg;
+
+    cfg = cfg_init(opts, CFGF_NONE);
+    if (cfg_parse(cfg, "smnntpd.conf") != CFG_SUCCESS) {
+        printf("file couldn't be found!\n");
+        exit(1);
+    }
+     
+
     proxy.sin_family = AF_INET;
-    proxy.sin_port = htons(PROXY_PORT);
-    proxy.sin_addr.s_addr = PROXY_ADDRESS;
+    proxy.sin_port = htons(cfg_getint(cfg, "proxy_port"));
+    proxy.sin_addr.s_addr = inet_addr(
+                                cfg_getstr(cfg, "proxy_addr"));
     memset(proxy.sin_zero,'\0', sizeof proxy.sin_zero);
     
     int proxyfd = socket(PF_INET, SOCK_STREAM, 0);   
@@ -159,7 +182,10 @@ main(void)
             struct timeval timeout = {0, 1000};
 
             close(proxyfd);
-            server_stream = server_connect();
+            server_stream = server_connect(
+                             cfg_getstr(cfg, "server_addr"),
+                             cfg_getstr(cfg, "server_port")
+                            );
             serverfd      = fileno(server_stream);
 
             if ((client_stream = fdopen(clientfd, "r+")) == NULL)
@@ -168,10 +194,14 @@ main(void)
             setlinebuf(server_stream);
             setlinebuf(client_stream);
 
-            if (AUTH_WITHOUT_CLIENT_KNOWING)
+            if (cfg_getbool(cfg, "auth"))
             {
                 fgets(srv_msg, NNTP_BUF, server_stream);
-                if (set_credential(server_stream))
+                if (set_credential(server_stream,
+                                   cfg_getstr(cfg, "username"),
+                                   cfg_getstr(cfg, "password")
+                                  )
+                   )
                 {
                     fprintf(stderr, "couldn't set creds\n");
                     exit(EXIT_FAILURE);
